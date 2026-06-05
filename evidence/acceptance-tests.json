@@ -1,0 +1,82 @@
+[
+  {
+    "test": "TEST1_TASK",
+    "message_paraphrase_only": "Set up Neo4j as a company-brain component for Viewport OS",
+    "output": {
+      "tags": [
+        "TASK"
+      ],
+      "tenant": "unknown",
+      "department": "engineering",
+      "summary": "Set up Neo4j as a company-brain component for Viewport OS",
+      "captures": [
+        {
+          "type": "issue",
+          "kind": "TASK",
+          "status": 201,
+          "number": 194,
+          "url": "https://github.com/viewport-corp/viewport-ops/issues/194"
+        }
+      ],
+      "session_start": "Loaded: 1 recent issues, KB has 4 notes, last session: 2026-06-05T00:03:58.543455+00:00."
+    }
+  },
+  {
+    "test": "TEST2_IDEA",
+    "message_paraphrase_only": "Explore selling agent tokens per tenant",
+    "output": {
+      "tags": [
+        "IDEA",
+        "QUESTION"
+      ],
+      "tenant": "unknown",
+      "department": "product",
+      "summary": "Explore selling agent tokens per tenant",
+      "captures": [
+        {
+          "type": "kb",
+          "kind": "IDEA",
+          "path": "ideas/2026-06-05-agent-tokens.md",
+          "status": 200,
+          "url": "https://github.com/viewport-corp/viewport-kb/blob/main/ideas/2026-06-05-agent-tokens.md"
+        }
+      ],
+      "session_start": "Loaded: 2 recent issues, KB has 4 notes, last session: 2026-06-05T00:03:58.543455+00:00."
+    }
+  },
+  {
+    "test": "TEST3_REFERENCE",
+    "message_paraphrase_only": "Capture and analyze shared reference link",
+    "output": {
+      "tags": [
+        "REFERENCE"
+      ],
+      "tenant": "unknown",
+      "department": "ops",
+      "summary": "Capture and analyze shared reference link",
+      "captures": [
+        {
+          "type": "kb",
+          "kind": "REFERENCE",
+          "path": "references/2026-06-05-capture-and-analyze-shared-reference-link.md",
+          "status": 200,
+          "url": "https://github.com/viewport-corp/viewport-kb/blob/main/references/2026-06-05-capture-and-analyze-shared-reference-link.md"
+        }
+      ],
+      "session_start": "Loaded: 2 recent issues, KB has 4 notes, last session: 2026-06-05T00:03:58.543455+00:00."
+    }
+  },
+  {
+    "test": "TEST4_SESSION_RESTART",
+    "output": {
+      "tags": [
+        "QUESTION"
+      ],
+      "tenant": "unknown",
+      "department": "ops",
+      "summary": "what are we working on",
+      "captures": [],
+      "session_start": "Loaded: 2 recent issues, KB has 4 notes, last session: 2026-06-05T00:03:58.543455+00:00."
+    }
+  }
+]
