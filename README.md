@@ -1,2 +1,3 @@
-# viewport-os
-Viewport OS control-plane handoff and operating-state repository.
+# Viewport OS
+
+Control-plane state and handoff repo for Viewport OS.
