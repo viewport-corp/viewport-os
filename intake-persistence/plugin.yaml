@@ -1,0 +1,6 @@
+name: intake_persistence
+version: 1.0.0
+description: Viewport intake-to-persistence pre-gateway capture hook.
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch
