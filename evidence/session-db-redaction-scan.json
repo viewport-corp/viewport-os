@@ -1,0 +1,33 @@
+{
+  "db_path": "/opt/data/state.db",
+  "db_size_bytes": 541130752,
+  "scanned_at_utc": "2026-06-04T23:59:57.968481Z",
+  "patterns": {
+    "sk-": {
+      "message_count": 978
+    },
+    "ghp_": {
+      "message_count": 138
+    },
+    "TELEGRAM_BOT_TOKEN": {
+      "message_count": 277
+    },
+    "CF_API_KEY": {
+      "message_count": 65
+    },
+    "xoxb-": {
+      "message_count": 14
+    },
+    "api_key_words": {
+      "message_count": 672
+    },
+    "bearer_words": {
+      "message_count": 11
+    },
+    "token_words": {
+      "message_count": 323
+    }
+  },
+  "raw_content_exported": false,
+  "policy": "Do not export raw session content to GitHub/KB; only paraphrased captures."
+}
