@@ -1,13 +1,14 @@
 # Viewport OS HANDOFF
 
-Last updated: 2026-06-05T00:03:58.543455+00:00
+Last updated: 2026-06-05T00:10:54.233966+00:00
 
 ## System state
 
 - `/migration/audit` completed sections 0–12.
-- Intake-to-persistence pipeline v1 is being installed.
-- Session DB contains credential-pattern hits; raw chat/session content must not be exported.
+- Intake-to-persistence pipeline v1 installed as Hermes plugin `intake_persistence`.
+- Session DB has credential-pattern hits; raw chat/session content must not be exported.
 - GitHub and KB captures are public-safe paraphrases only.
+- Disabled toolsets: homeassistant, spotify, yuanbao, moa.
 
 ## Active tenants
 
@@ -18,15 +19,14 @@ Last updated: 2026-06-05T00:03:58.543455+00:00
 
 ## Active tasks
 
-- Build conversation capture hook.
-- Auto-create GitHub issues for TASK/DECISION/FEEDBACK.
-- Auto-create KB markdown notes for IDEA/REFERENCE/architecture QUESTION.
-- Rebuild weekly INDEX.md.
-- Send Monday weekly digest.
+- Monitor live intake hook after gateway restart.
+- Promote repeated KB topics into canonical decisions/tasks.
+- Replace PAT auth with GitHub App auth.
+- Complete native Telegram export only with safe redaction/rotation plan.
 
 ## Last session summary
 
-Sam ordered the anti-amnesia intake-to-persistence pipeline after audit showed 29,009 messages in 30 days and credential-pattern hits in session logs. Step 0 security issue created; from now on captures must be paraphrased.
+Sam ordered anti-amnesia intake-to-persistence. Step 0 security issue created (#192). `viewport-kb` and `viewport-os` repos were created. The hook creates issues for TASK/DECISION/FEEDBACK and KB notes for IDEA/REFERENCE/architecture QUESTION. Acceptance tests created issue #194 and KB notes including `ideas/2026-06-05-agent-tokens.md`. Weekly digest cron job `2c9a013fb729` is scheduled.
 
 ## End-of-session rule
 
