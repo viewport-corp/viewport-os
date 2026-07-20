@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
 import html
 import json
 import os
@@ -22,6 +23,7 @@ STATE_DIR = HOME / "intake-persistence"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = STATE_DIR / "seen_sessions.json"
 EVIDENCE_FILE = STATE_DIR / "last_capture.json"
+CAPTURE_INDEX_FILE = STATE_DIR / "capture_index.json"
 
 LABELS = {
     "chat-capture": "5319E7",
@@ -176,10 +178,11 @@ def summarize(text: str) -> str:
     return clean[:110] or "Chat capture"
 
 
-def issue_body(text: str, tags: List[str], tenant: str, dept: str) -> str:
+def issue_body(text: str, tags: List[str], tenant: str, dept: str, capture_id: str = "") -> str:
     urls = re.findall(r"https?://\S+", text or "")
     return f"""## Source
 Telegram DM with Sam, captured by intake_persistence pre-gateway hook.
+Capture ID: `{capture_id or 'unavailable'}`
 
 ## What Sam said — paraphrased
 {summarize(text)}
@@ -204,7 +207,7 @@ Anti-amnesia intake pipeline. Public-safe paraphrase only; raw Telegram/session 
 """
 
 
-def create_issue(kind: str, text: str, tags: List[str], tenant: str, dept: str):
+def create_issue(kind: str, text: str, tags: List[str], tenant: str, dept: str, capture_id: str = ""):
     if kind == "DECISION":
         title = "[CHAT→DECISION] " + summarize(text)
         labels = ["decision-log", "chat-capture", "anti-amnesia", "needs-triage", f"tenant-{tenant}", f"dept-{dept}"]
@@ -215,7 +218,7 @@ def create_issue(kind: str, text: str, tags: List[str], tenant: str, dept: str):
         title = "[CHAT→TASK] " + summarize(text)
         labels = ["chat-capture", "anti-amnesia", "needs-triage", f"tenant-{tenant}", f"dept-{dept}"]
     # assignee hermes only if it exists; GitHub rejects unknown assignee, so omit on failure-prone hook.
-    return gh(f"/repos/{ORG}/{ISSUE_REPO}/issues", "POST", {"title": title[:240], "body": issue_body(text,tags,tenant,dept), "labels": labels})
+    return gh(f"/repos/{ORG}/{ISSUE_REPO}/issues", "POST", {"title": title[:240], "body": issue_body(text,tags,tenant,dept,capture_id), "labels": labels})
 
 
 def get_file(repo: str, path: str):
@@ -381,18 +384,58 @@ def load_start_context(session_key: str) -> str:
     return f"Loaded: {n_issues} recent issues, KB has {len(notes)} notes, last session: {last}."
 
 
-def capture_message(text: str, session_key: str = "manual-test") -> Dict[str, Any]:
+def _load_capture_index() -> Dict[str, Any]:
+    try:
+        data = json.loads(CAPTURE_INDEX_FILE.read_text()) if CAPTURE_INDEX_FILE.exists() else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_capture_index(index: Dict[str, Any]) -> None:
+    # Bound local state while retaining enough history to absorb Telegram retries.
+    if len(index) > 5000:
+        index = dict(list(index.items())[-5000:])
+    tmp = CAPTURE_INDEX_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index, indent=2))
+    os.replace(tmp, CAPTURE_INDEX_FILE)
+
+
+def _event_capture_id(event: Any, source: Any, text: str) -> str:
+    platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+    message_id = getattr(source, "message_id", None) or getattr(event, "update_id", None)
+    stable = ":".join(
+        str(value or "")
+        for value in (
+            platform,
+            getattr(source, "chat_id", ""),
+            getattr(source, "thread_id", ""),
+            message_id,
+        )
+    )
+    if not message_id:
+        stable += ":" + text
+    return "telegram:" + hashlib.sha256(stable.encode()).hexdigest()[:24]
+
+
+def capture_message(text: str, session_key: str = "manual-test", capture_id: str | None = None) -> Dict[str, Any]:
+    index = _load_capture_index()
+    if capture_id and capture_id in index:
+        duplicate = dict(index[capture_id])
+        duplicate["duplicate"] = True
+        EVIDENCE_FILE.write_text(json.dumps(duplicate, indent=2))
+        return duplicate
+
     tags = classify(text)
     tenant = infer_tenant(text)
     dept = infer_dept(text)
     captures = []
     # Issues
-    issue_kinds = []
-    if "TASK" in tags: issue_kinds.append("TASK")
-    if "DECISION" in tags: issue_kinds.append("DECISION")
-    if "FEEDBACK" in tags: issue_kinds.append("FEEDBACK")
-    for kind in issue_kinds:
-        s, d = create_issue(kind, text, tags, tenant, dept)
+    # One inbound message maps to at most one canonical issue. Use the highest
+    # urgency/actionability kind while preserving every classifier tag in body.
+    kind = next((value for value in ("FEEDBACK", "DECISION", "TASK") if value in tags), None)
+    if kind:
+        s, d = create_issue(kind, text, tags, tenant, dept, capture_id or "")
         captures.append({"type":"issue","kind":kind,"status":s,"number":d.get("number"),"url":d.get("html_url")})
     # KB notes
     if "IDEA" in tags:
@@ -404,8 +447,11 @@ def capture_message(text: str, session_key: str = "manual-test") -> Dict[str, An
     if "QUESTION" in tags and ("architecture" in text.lower() or "company" in text.lower() or "product" in text.lower() or "brain" in text.lower()):
         path, s, d = make_note("decisions", text, tags, tenant, dept)
         captures.append({"type":"kb","kind":"QUESTION","path":path,"status":s,"url":d.get("content",{}).get("html_url") if isinstance(d,dict) else None})
-    out={"tags":tags,"tenant":tenant,"department":dept,"summary":summarize(text),"captures":captures,"session_start":load_start_context(session_key)}
+    out={"capture_id":capture_id,"tags":tags,"tenant":tenant,"department":dept,"summary":summarize(text),"captures":captures,"session_start":load_start_context(session_key),"duplicate":False}
     EVIDENCE_FILE.write_text(json.dumps(out, indent=2))
+    if capture_id and all(c.get("status") in (200, 201) for c in captures):
+        index[capture_id] = out
+        _save_capture_index(index)
     return out
 
 
@@ -420,17 +466,13 @@ def pre_gateway_dispatch(event=None, gateway=None, session_store=None, **kwargs)
     if not text.strip() or text.strip().startswith("/"):
         return {"action":"allow"}
     session_key = f"{platform}:{getattr(source,'chat_id', '')}:{getattr(source,'thread_id', '')}:{getattr(source,'user_id','')}"
-    result = capture_message(text, session_key=session_key)
-    lines=[]
-    if result.get("session_start"):
-        lines.append(result["session_start"])
-    for c in result.get("captures", []):
-        if c.get("type") == "issue" and c.get("number"):
-            lines.append(f"Captured to GitHub issue #{c['number']}")
-        elif c.get("type") == "kb" and c.get("path"):
-            lines.append(f"Captured to KB: {c['path']}")
-    if lines:
-        return {"action":"rewrite", "text": "\n".join(lines) + "\n\nUser message paraphrase for response: " + result.get("summary", "")}
+    capture_id = _event_capture_id(event, source, text)
+    try:
+        capture_message(text, session_key=session_key, capture_id=capture_id)
+    except Exception:
+        # Persistence is an audit side effect, never the transport. GitHub/KB
+        # failure must not block, replace, or truncate the user's instruction.
+        pass
     return {"action":"allow"}
 
 
