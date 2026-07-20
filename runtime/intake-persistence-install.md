@@ -27,7 +27,7 @@ Telegram Bot API 10.0 requires **Bot-to-Bot Communication Mode** to be enabled i
 
 Runtime gates after the BotFather toggle:
 
-- Hermes: `telegram.allow_bots: mentions`; retain mention requirements and existing chat boundaries.
+- Hermes: add only Viewport Bot ID `8390541118` to the existing Telegram sender allowlist. Do not enable a global any-bot bypass.
 - Viewport OpenClaw: `channels.telegram.allowBots: true`; add Hermes bot ID `8518793332` to the top-level, group, and topic allowlists that already contain Sam.
 - Keep pair-loop protection enabled with a bounded event window and cooldown.
 - Use a plain-text handoff envelope containing request ID, destination, status, timeout, and maximum interaction depth. Do not depend on rich-message parsing for control messages.
