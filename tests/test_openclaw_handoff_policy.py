@@ -75,15 +75,10 @@ def test_apply_policy_changes_only_exact_eligible_group_topic_pairs():
     root = config["channels"]["telegram"]
     account = root["accounts"]["default"]
     for telegram in (root, account):
-        assert telegram["allowBots"] is True
+        assert "allowBots" not in telegram
+        assert "botLoopProtection" not in telegram
         assert peer_bot_id in telegram["allowFrom"]
         assert peer_bot_id not in telegram["groupAllowFrom"]
-        assert telegram["botLoopProtection"] == {
-            "enabled": True,
-            "maxEventsPerWindow": 8,
-            "windowSeconds": 60,
-            "cooldownSeconds": 300,
-        }
         assert peer_bot_id in telegram["groups"]["-1000000000001"]["allowFrom"]
         assert peer_bot_id in telegram["groups"]["-1000000000001"]["topics"]["101"]["allowFrom"]
         assert peer_bot_id not in telegram["groups"]["-1000000000001"]["topics"]["202"]["allowFrom"]
