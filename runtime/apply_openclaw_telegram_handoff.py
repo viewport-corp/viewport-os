@@ -17,14 +17,6 @@ from pathlib import Path
 from typing import Any
 
 
-LOOP_POLICY = {
-    "enabled": True,
-    "maxEventsPerWindow": 8,
-    "windowSeconds": 60,
-    "cooldownSeconds": 300,
-}
-
-
 def _preserve_metadata(path: Path, original_stat: os.stat_result) -> None:
     """Restore the original mode and owner after a root-run atomic replace."""
     os.chown(path, original_stat.st_uid, original_stat.st_gid)
@@ -79,8 +71,6 @@ def _apply_validated_scope(
     hermes_bot_id: int,
     allowed_boundaries: dict[str, set[str]],
 ) -> None:
-    scope["allowBots"] = True
-    scope["botLoopProtection"] = dict(LOOP_POLICY)
     scope["allowFrom"] = _append_unique(scope.get("allowFrom"), hermes_bot_id)
     groups = scope["groups"]
     for group_id, topic_ids in allowed_boundaries.items():
