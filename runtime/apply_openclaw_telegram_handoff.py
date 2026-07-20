@@ -3,7 +3,7 @@
 
 The script never prints configuration contents. Without --apply it performs a
 read-only drift check. With --apply it creates a timestamped backup and replaces
-the JSON atomically while preserving file permissions.
+the JSON atomically while preserving owner, group, and mode.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ LOOP_POLICY = {
 
 def _preserve_metadata(path: Path, original_stat: os.stat_result) -> None:
     """Restore the original mode and owner after a root-run atomic replace."""
-    os.chmod(path, stat.S_IMODE(original_stat.st_mode))
     os.chown(path, original_stat.st_uid, original_stat.st_gid)
+    os.chmod(path, stat.S_IMODE(original_stat.st_mode))
 
 
 def _append_unique(values: Any, value: int) -> list[Any]:
@@ -38,28 +38,46 @@ def _append_unique(values: Any, value: int) -> list[Any]:
     return result
 
 
-def _apply_telegram_scope(scope: dict[str, Any], hermes_bot_id: int) -> None:
+def _contains_id(values: Any, expected: int) -> bool:
+    return isinstance(values, list) and str(expected) in {str(item) for item in values}
+
+
+def _apply_telegram_scope(
+    scope: dict[str, Any],
+    hermes_bot_id: int,
+    boundary_user_id: int,
+    allowed_group_ids: set[str],
+    allowed_topic_ids: set[str],
+) -> None:
     scope["allowBots"] = True
     scope["botLoopProtection"] = dict(LOOP_POLICY)
     scope["allowFrom"] = _append_unique(scope.get("allowFrom"), hermes_bot_id)
-    scope["groupAllowFrom"] = _append_unique(scope.get("groupAllowFrom"), hermes_bot_id)
 
     groups = scope.get("groups")
     if not isinstance(groups, dict):
         return
-    for group in groups.values():
-        if not isinstance(group, dict):
+    for group_id in allowed_group_ids:
+        group = groups.get(group_id)
+        if not isinstance(group, dict) or not _contains_id(group.get("allowFrom"), boundary_user_id):
             continue
         group["allowFrom"] = _append_unique(group.get("allowFrom"), hermes_bot_id)
         topics = group.get("topics")
         if not isinstance(topics, dict):
             continue
-        for topic in topics.values():
-            if isinstance(topic, dict):
+        for topic_id in allowed_topic_ids:
+            topic = topics.get(topic_id)
+            if isinstance(topic, dict) and _contains_id(topic.get("allowFrom"), boundary_user_id):
                 topic["allowFrom"] = _append_unique(topic.get("allowFrom"), hermes_bot_id)
 
 
-def apply_policy(config: dict[str, Any], hermes_bot_id: int) -> bool:
+def apply_policy(
+    config: dict[str, Any],
+    hermes_bot_id: int,
+    boundary_user_id: int,
+    account_name: str,
+    allowed_group_ids: set[str],
+    allowed_topic_ids: set[str],
+) -> bool:
     """Mutate config with the least-privilege handoff policy; return drift."""
     before = json.dumps(config, sort_keys=True, separators=(",", ":"))
     channels = config.setdefault("channels", {})
@@ -67,12 +85,16 @@ def apply_policy(config: dict[str, Any], hermes_bot_id: int) -> bool:
     if not isinstance(telegram, dict):
         raise ValueError("channels.telegram must be a JSON object")
 
-    _apply_telegram_scope(telegram, hermes_bot_id)
+    _apply_telegram_scope(
+        telegram, hermes_bot_id, boundary_user_id, allowed_group_ids, allowed_topic_ids
+    )
     accounts = telegram.get("accounts")
     if isinstance(accounts, dict):
-        for account in accounts.values():
-            if isinstance(account, dict):
-                _apply_telegram_scope(account, hermes_bot_id)
+        account = accounts.get(account_name)
+        if isinstance(account, dict):
+            _apply_telegram_scope(
+                account, hermes_bot_id, boundary_user_id, allowed_group_ids, allowed_topic_ids
+            )
 
     after = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return before != after
@@ -82,11 +104,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--hermes-bot-id", required=True, type=int)
+    parser.add_argument("--boundary-user-id", required=True, type=int)
+    parser.add_argument("--account", default="default")
+    parser.add_argument("--group-id", action="append", default=[])
+    parser.add_argument("--topic-id", action="append", default=[])
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text())
-    changed = apply_policy(config, args.hermes_bot_id)
+    changed = apply_policy(
+        config,
+        args.hermes_bot_id,
+        args.boundary_user_id,
+        args.account,
+        set(args.group_id),
+        set(args.topic_id),
+    )
     if not changed:
         print("policy_status=current")
         return 0
@@ -104,6 +137,7 @@ def main() -> int:
     temp.write_text(json.dumps(config, indent=2) + "\n")
     _preserve_metadata(temp, original_stat)
     os.replace(temp, args.config)
+    _preserve_metadata(args.config, original_stat)
     print(f"policy_status=applied backup={backup}")
     return 0
 

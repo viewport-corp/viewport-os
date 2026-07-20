@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -128,7 +129,7 @@ def public_safe_text(text: str) -> str:
             host = parts.hostname or ""
             if parts.port:
                 host += f":{parts.port}"
-            return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+            return urllib.parse.urlunsplit((parts.scheme, host, "/", "", ""))
         except Exception:
             return "[REDACTED_URL]"
 
@@ -427,7 +428,10 @@ def _connect_queue() -> sqlite3.Connection:
         )"""
     )
     db.commit()
-    os.chmod(QUEUE_DB, 0o600)
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(QUEUE_DB) + suffix)
+        if path.exists():
+            os.chmod(path, 0o600)
     return db
 
 
@@ -443,7 +447,8 @@ def _recover_stale_processing() -> int:
         return cursor.rowcount
 
 
-def _event_capture_id(event: Any, source: Any, text: str) -> str:
+def _event_capture_id(event: Any, source: Any, text: str) -> str | None:
+    del text
     platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
     message_id = (
         getattr(source, "message_id", None)
@@ -451,9 +456,10 @@ def _event_capture_id(event: Any, source: Any, text: str) -> str:
         or getattr(event, "platform_update_id", None)
     )
     if not message_id:
-        # Do not collapse two distinct identical messages when an adapter omits
-        # IDs. This fallback is intentionally unique rather than text-derived.
-        message_id = f"fallback:{dt.datetime.now(dt.timezone.utc).isoformat()}:{id(event)}"
+        # There is no safe way to distinguish a retry from a distinct identical
+        # message without a transport identifier. Skip only the audit side effect;
+        # the immutable message still proceeds to the agent.
+        return None
     stable = ":".join(
         str(value or "")
         for value in (platform, getattr(source, "chat_id", ""), getattr(source, "thread_id", ""), message_id)
@@ -484,13 +490,18 @@ def enqueue_capture(capture_id: str, text: str, session_key: str) -> bool:
 
 def find_issue_by_capture_id(capture_id: str) -> Dict[str, Any] | None:
     marker = f"Capture ID: `{capture_id}`"
-    status, data = gh(f"/repos/{ORG}/{ISSUE_REPO}/issues?state=all&sort=created&direction=desc&per_page=100")
-    if status != 200 or not isinstance(data, list):
-        return None
-    for item in data:
-        if isinstance(item, dict) and marker in str(item.get("body") or ""):
-            return item
-    return None
+    for page in range(1, 21):
+        status, data = gh(
+            f"/repos/{ORG}/{ISSUE_REPO}/issues?state=all&sort=created&direction=desc&per_page=100&page={page}"
+        )
+        if status != 200 or not isinstance(data, list):
+            raise RuntimeError(f"issue_reconciliation_lookup_{status}")
+        for item in data:
+            if isinstance(item, dict) and marker in str(item.get("body") or ""):
+                return item
+        if len(data) < 100:
+            return None
+    raise RuntimeError("issue_reconciliation_incomplete")
 
 
 def _write_evidence(result: Dict[str, Any]) -> None:
@@ -507,6 +518,8 @@ def capture_message(
     session_key: str = "manual-test",
     capture_id: str | None = None,
     persist_issue=None,
+    existing_issue_number: int | None = None,
+    existing_issue_url: str | None = None,
 ) -> Dict[str, Any]:
     del session_key
     text = public_safe_text(text)
@@ -523,18 +536,25 @@ def capture_message(
         "issue_reconciled": False,
     }
     if kind and capture_id:
-        existing = find_issue_by_capture_id(capture_id)
-        if existing:
+        if existing_issue_number:
             result.update(
-                issue_number=existing.get("number"),
-                issue_url=existing.get("html_url"),
+                issue_number=existing_issue_number,
+                issue_url=existing_issue_url,
                 issue_reconciled=True,
             )
         else:
-            status, data = create_issue(kind, text, tags, tenant, dept, capture_id)
-            if status != 201 or not isinstance(data, dict) or not data.get("number"):
-                raise RuntimeError(f"issue_create_{status}")
-            result.update(issue_number=data.get("number"), issue_url=data.get("html_url"))
+            existing = find_issue_by_capture_id(capture_id)
+            if existing:
+                result.update(
+                    issue_number=existing.get("number"),
+                    issue_url=existing.get("html_url"),
+                    issue_reconciled=True,
+                )
+            else:
+                status, data = create_issue(kind, text, tags, tenant, dept, capture_id)
+                if status != 201 or not isinstance(data, dict) or not data.get("number"):
+                    raise RuntimeError(f"issue_create_{status}")
+                result.update(issue_number=data.get("number"), issue_url=data.get("html_url"))
         if persist_issue:
             persist_issue(kind, result["issue_number"], result["issue_url"])
 
@@ -594,9 +614,19 @@ def _finish_capture(capture_id: str, status: str, error: str | None = None) -> N
         )
 
 
+def _retry_delay(previous_attempts: int) -> int:
+    return min(2 ** (max(0, previous_attempts) + 1), 60)
+
+
 def _worker_loop() -> None:
     while True:
-        row = _claim_next_capture()
+        try:
+            _recover_stale_processing()
+            row = _claim_next_capture()
+        except Exception:
+            _WORKER_WAKE.wait(2.0)
+            _WORKER_WAKE.clear()
+            continue
         if row is None:
             _WORKER_WAKE.wait(2.0)
             _WORKER_WAKE.clear()
@@ -607,17 +637,27 @@ def _worker_loop() -> None:
                 row["safe_text"] or "",
                 capture_id=capture_id,
                 persist_issue=lambda kind, number, url: _persist_issue_effect(capture_id, kind, number, url),
+                existing_issue_number=row["issue_number"],
+                existing_issue_url=row["issue_url"],
             )
         except Exception as exc:
-            _finish_capture(capture_id, "retry", type(exc).__name__)
+            try:
+                _finish_capture(capture_id, "retry", type(exc).__name__)
+            except Exception:
+                pass
+            time.sleep(_retry_delay(int(row["attempts"] or 0)))
         else:
-            _finish_capture(capture_id, "completed")
+            try:
+                _finish_capture(capture_id, "completed")
+            except Exception:
+                pass
 
 
 def _ensure_worker() -> None:
     global _WORKER
     with _WORKER_LOCK:
         if _WORKER is None or not _WORKER.is_alive():
+            _recover_stale_processing()
             _WORKER = threading.Thread(target=_worker_loop, name="intake-persistence", daemon=True)
             _WORKER.start()
 
@@ -632,10 +672,12 @@ def pre_gateway_dispatch(event=None, gateway=None, session_store=None, **kwargs)
     text = getattr(event, "text", None) or ""
     if not text.strip() or text.strip().startswith("/"):
         return {"action":"allow"}
+    original_text = text
     session_key = f"{platform}:{getattr(source,'chat_id', '')}:{getattr(source,'thread_id', '')}:{getattr(source,'user_id','')}"
-    capture_id = _event_capture_id(event, source, text)
     try:
-        enqueue_capture(capture_id, text, session_key)
+        capture_id = _event_capture_id(event, source, original_text)
+        if capture_id:
+            enqueue_capture(capture_id, original_text, session_key)
     except Exception:
         # Persistence is an audit side effect, never the transport. GitHub/KB
         # failure must not block, replace, or truncate the user's instruction.

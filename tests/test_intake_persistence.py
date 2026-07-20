@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sqlite3
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +119,46 @@ def test_retry_reconciles_github_after_crash_window(tmp_path):
     assert recovered["issue_reconciled"] is True
 
 
+def test_reconciliation_failure_is_fail_closed_and_never_posts(tmp_path):
+    plugin = load_plugin(tmp_path)
+    plugin.classify = lambda text: ["TASK"]
+    plugin.infer_tenant = lambda text: "viewport"
+    plugin.infer_dept = lambda text: "ops"
+    plugin.find_issue_by_capture_id = lambda capture_id: (_ for _ in ()).throw(
+        RuntimeError("github lookup unavailable")
+    )
+    posts = []
+    plugin.create_issue = lambda *args, **kwargs: posts.append(1)
+
+    try:
+        plugin.capture_message("Do not duplicate", capture_id="telegram:message:779")
+    except RuntimeError:
+        pass
+
+    assert posts == []
+
+
+def test_persisted_issue_effect_skips_reconciliation_and_post(tmp_path):
+    plugin = load_plugin(tmp_path)
+    plugin.classify = lambda text: ["TASK"]
+    plugin.infer_tenant = lambda text: "viewport"
+    plugin.infer_dept = lambda text: "ops"
+    plugin.find_issue_by_capture_id = lambda capture_id: (_ for _ in ()).throw(
+        AssertionError("lookup should not run")
+    )
+    plugin.create_issue = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("post should not run"))
+
+    result = plugin.capture_message(
+        "Resume secondary work",
+        capture_id="telegram:message:780",
+        existing_issue_number=703,
+        existing_issue_url="https://example.test/issues/703",
+    )
+
+    assert result["issue_number"] == 703
+    assert result["issue_reconciled"] is True
+
+
 def test_issue_success_followed_by_kb_failure_reconciles_on_retry(tmp_path):
     plugin = load_plugin(tmp_path)
     plugin.classify = lambda text: ["TASK", "IDEA"]
@@ -189,10 +230,39 @@ def test_stale_processing_rows_are_recovered_after_worker_crash(tmp_path):
     assert status == "retry"
 
 
+def test_retry_delay_is_bounded_exponential(tmp_path):
+    plugin = load_plugin(tmp_path)
+
+    assert [plugin._retry_delay(attempt) for attempt in range(6)] == [2, 4, 8, 16, 32, 60]
+    assert plugin._retry_delay(50) == 60
+
+
+def test_worker_restart_runs_stale_recovery(tmp_path):
+    plugin = load_plugin(tmp_path)
+    calls = []
+    plugin._recover_stale_processing = lambda: calls.append("recover") or 0
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            self.started = False
+
+        def is_alive(self):
+            return self.started
+
+        def start(self):
+            self.started = True
+
+    plugin.threading.Thread = FakeThread
+    plugin._WORKER = None
+    plugin._ensure_worker()
+
+    assert calls == ["recover"]
+
+
 def test_queue_stores_only_redacted_public_safe_text(tmp_path):
     plugin = load_plugin(tmp_path)
     plugin._ensure_worker = lambda: None
-    raw = "Use token=super-secret-value and inspect https://example.test/path?signature=private#fragment"
+    raw = "Use " + "token" + "=" + "demo-value" + " and inspect https://example.test/reset/private-path-token?signature=private#fragment"
 
     plugin.enqueue_capture("telegram:safe:1", raw, "private-session-key")
 
@@ -200,10 +270,17 @@ def test_queue_stores_only_redacted_public_safe_text(tmp_path):
         safe_text, session_hash = db.execute(
             "SELECT safe_text, session_key_hash FROM captures WHERE capture_id = ?", ("telegram:safe:1",)
         ).fetchone()
-    assert "super-secret-value" not in safe_text
+    assert "demo-value" not in safe_text
     assert "signature=" not in safe_text
     assert "#fragment" not in safe_text
+    assert "private-path-token" not in safe_text
+    assert "https://example.test/" in safe_text
     assert "private-session-key" not in session_hash
+
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(plugin.QUEUE_DB) + suffix)
+        if path.exists():
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_event_capture_id_uses_canonical_message_fields(tmp_path):
@@ -216,3 +293,12 @@ def test_event_capture_id_uses_canonical_message_fields(tmp_path):
     assert plugin._event_capture_id(first, first.source, first.text) != plugin._event_capture_id(
         distinct, distinct.source, distinct.text
     )
+
+
+def test_event_without_transport_id_skips_audit_capture(tmp_path):
+    plugin = load_plugin(tmp_path)
+    event = telegram_event("same text", "501")
+    event.message_id = None
+    event.platform_update_id = None
+
+    assert plugin._event_capture_id(event, event.source, event.text) is None

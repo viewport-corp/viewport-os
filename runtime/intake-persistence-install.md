@@ -23,12 +23,12 @@ Spotify plugin also removed from `plugins.enabled`.
 
 ## Telegram bot-to-bot handoff contract
 
-Telegram Bot API 10.0 requires **Bot-to-Bot Communication Mode** to be enabled in BotFather for both `@Hermes_Viewport_Bot` and `@TheViewportBot` before private bot-to-bot sends by username will work.
+Telegram Bot API 10.0 supports opt-in bot-to-bot communication. Confirm the owner-level mode from current evidence, but treat each send direction independently: a successful peer send proves the pair is not globally disabled, while a reverse `BOT_ACCESS_RESTRICTED` result is an asymmetric transport restriction rather than proof that both owner settings are off.
 
-Runtime gates after the BotFather toggle:
+Runtime gates use values resolved from the protected runtime registry or environment; never commit production bot handles, user IDs, chat IDs, or tokens:
 
-- Hermes: add only Viewport Bot ID `8390541118` to the existing Telegram sender allowlist. Do not enable a global any-bot bypass.
-- Viewport OpenClaw: `channels.telegram.allowBots: true`; add Hermes bot ID `8518793332` to the top-level, group, and topic allowlists that already contain Sam.
+- Hermes: add only `${VIEWPORT_BOT_ID}` to the existing Telegram sender allowlist. Do not enable a global any-bot bypass.
+- Viewport OpenClaw: set `channels.telegram.allowBots: true`; add `${HERMES_BOT_ID}` only to the selected account and explicitly approved `${GROUP_ID}` / `${TOPIC_ID}` boundaries that already contain `${BOUNDARY_USER_ID}`. Do not modify unrelated accounts, groups, or topics.
 - Keep pair-loop protection enabled with a bounded event window and cooldown.
 - Use a plain-text handoff envelope containing request ID, destination, status, timeout, and maximum interaction depth. Do not depend on rich-message parsing for control messages.
 
@@ -39,7 +39,7 @@ The intake hook must return `{"action": "allow"}` immediately after a local SQLi
 1. Back up the live Hermes plugin, Hermes config, and OpenClaw config.
 2. Apply only the committed plugin artifact and scoped Telegram policy keys.
 3. Reload/restart only the Hermes and Viewport Bot gateways.
-4. Verify human-origin intake, both private bot-to-bot directions, one-issue idempotency, and loop suppression.
+4. Verify human-origin intake, each private bot-to-bot direction independently, the approved group mention/reply fallback, one-issue idempotency, and loop suppression. Record any asymmetric private-path restriction without attributing it to a globally disabled owner setting.
 5. If any check fails, restore the backups and restart only the affected gateway.
 
 ## Security
