@@ -262,7 +262,12 @@ def test_worker_restart_runs_stale_recovery(tmp_path):
 def test_queue_stores_only_redacted_public_safe_text(tmp_path):
     plugin = load_plugin(tmp_path)
     plugin._ensure_worker = lambda: None
-    raw = "Use " + "token" + "=" + "demo-value" + " and inspect https://example.test/reset/private-path-token?signature=private#fragment"
+    raw = (
+        "Use " + "token" + "=" + "demo-value"
+        + " and inspect https://example.test/reset/lower-path?signature=private#fragment"
+        + " then HTTPS://upper.example.test/reset/upper-path?signature=private#fragment"
+        + " then www.scheme-less.example.test/reset/scheme-less-path?signature=private#fragment"
+    )
 
     plugin.enqueue_capture("telegram:safe:1", raw, "private-session-key")
 
@@ -273,8 +278,12 @@ def test_queue_stores_only_redacted_public_safe_text(tmp_path):
     assert "demo-value" not in safe_text
     assert "signature=" not in safe_text
     assert "#fragment" not in safe_text
-    assert "private-path-token" not in safe_text
+    assert "lower-path" not in safe_text
+    assert "upper-path" not in safe_text
+    assert "scheme-less-path" not in safe_text
     assert "https://example.test/" in safe_text
+    assert "https://upper.example.test/" in safe_text
+    assert "https://www.scheme-less.example.test/" in safe_text
     assert "private-session-key" not in session_hash
 
     for suffix in ("", "-wal", "-shm"):

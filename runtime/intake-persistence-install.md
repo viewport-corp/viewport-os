@@ -28,7 +28,7 @@ Telegram Bot API 10.0 supports opt-in bot-to-bot communication. Confirm the owne
 Runtime gates use values resolved from the protected runtime registry or environment; never commit production bot handles, user IDs, chat IDs, or tokens:
 
 - Hermes: add only `${VIEWPORT_BOT_ID}` to the existing Telegram sender allowlist. Do not enable a global any-bot bypass.
-- Viewport OpenClaw: set `channels.telegram.allowBots: true`; add `${HERMES_BOT_ID}` only to the selected account and explicitly approved `${GROUP_ID}` / `${TOPIC_ID}` boundaries that already contain `${BOUNDARY_USER_ID}`. Do not modify unrelated accounts, groups, or topics.
+- Viewport OpenClaw: set `channels.telegram.allowBots: true`; add `${HERMES_BOT_ID}` only to the selected account and exact owner-qualified group/topic pairs supplied as repeated `--boundary=${GROUP_ID}:${TOPIC_ID}` values. Validate every selected account, group, topic, and allowlist before mutating anything. Do not modify unrelated accounts, groups, or topics.
 - Keep pair-loop protection enabled with a bounded event window and cooldown.
 - Use a plain-text handoff envelope containing request ID, destination, status, timeout, and maximum interaction depth. Do not depend on rich-message parsing for control messages.
 

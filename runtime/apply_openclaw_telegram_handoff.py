@@ -32,7 +32,9 @@ def _preserve_metadata(path: Path, original_stat: os.stat_result) -> None:
 
 
 def _append_unique(values: Any, value: int) -> list[Any]:
-    result = list(values) if isinstance(values, list) else []
+    if not isinstance(values, list):
+        raise ValueError("allowlist must be a JSON array")
+    result = list(values)
     if value not in result and str(value) not in {str(item) for item in result}:
         result.append(value)
     return result
@@ -42,32 +44,52 @@ def _contains_id(values: Any, expected: int) -> bool:
     return isinstance(values, list) and str(expected) in {str(item) for item in values}
 
 
-def _apply_telegram_scope(
+def _validate_scope(
+    scope: dict[str, Any],
+    boundary_user_id: int,
+    allowed_boundaries: dict[str, set[str]],
+    label: str,
+) -> None:
+    if not _contains_id(scope.get("allowFrom"), boundary_user_id):
+        raise ValueError(f"{label}.allowFrom must be an owner-qualified JSON array")
+    groups = scope.get("groups")
+    if not isinstance(groups, dict):
+        raise ValueError(f"{label}.groups must be a JSON object")
+    for group_id, topic_ids in allowed_boundaries.items():
+        group = groups.get(group_id)
+        if not isinstance(group, dict):
+            raise ValueError(f"{label}.groups[{group_id}] is missing")
+        if not _contains_id(group.get("allowFrom"), boundary_user_id):
+            raise ValueError(f"{label}.groups[{group_id}] is not owner-qualified")
+        topics = group.get("topics")
+        if not isinstance(topics, dict):
+            raise ValueError(f"{label}.groups[{group_id}].topics must be a JSON object")
+        for topic_id in topic_ids:
+            topic = topics.get(topic_id)
+            if not isinstance(topic, dict):
+                raise ValueError(f"{label}.groups[{group_id}].topics[{topic_id}] is missing")
+            if not _contains_id(topic.get("allowFrom"), boundary_user_id):
+                raise ValueError(
+                    f"{label}.groups[{group_id}].topics[{topic_id}] is not owner-qualified"
+                )
+
+
+def _apply_validated_scope(
     scope: dict[str, Any],
     hermes_bot_id: int,
-    boundary_user_id: int,
-    allowed_group_ids: set[str],
-    allowed_topic_ids: set[str],
+    allowed_boundaries: dict[str, set[str]],
 ) -> None:
     scope["allowBots"] = True
     scope["botLoopProtection"] = dict(LOOP_POLICY)
     scope["allowFrom"] = _append_unique(scope.get("allowFrom"), hermes_bot_id)
-
-    groups = scope.get("groups")
-    if not isinstance(groups, dict):
-        return
-    for group_id in allowed_group_ids:
-        group = groups.get(group_id)
-        if not isinstance(group, dict) or not _contains_id(group.get("allowFrom"), boundary_user_id):
-            continue
+    groups = scope["groups"]
+    for group_id, topic_ids in allowed_boundaries.items():
+        group = groups[group_id]
         group["allowFrom"] = _append_unique(group.get("allowFrom"), hermes_bot_id)
-        topics = group.get("topics")
-        if not isinstance(topics, dict):
-            continue
-        for topic_id in allowed_topic_ids:
-            topic = topics.get(topic_id)
-            if isinstance(topic, dict) and _contains_id(topic.get("allowFrom"), boundary_user_id):
-                topic["allowFrom"] = _append_unique(topic.get("allowFrom"), hermes_bot_id)
+        topics = group["topics"]
+        for topic_id in topic_ids:
+            topic = topics[topic_id]
+            topic["allowFrom"] = _append_unique(topic.get("allowFrom"), hermes_bot_id)
 
 
 def apply_policy(
@@ -75,29 +97,47 @@ def apply_policy(
     hermes_bot_id: int,
     boundary_user_id: int,
     account_name: str,
-    allowed_group_ids: set[str],
-    allowed_topic_ids: set[str],
+    allowed_boundaries: dict[str, set[str]],
 ) -> bool:
     """Mutate config with the least-privilege handoff policy; return drift."""
     before = json.dumps(config, sort_keys=True, separators=(",", ":"))
-    channels = config.setdefault("channels", {})
-    telegram = channels.setdefault("telegram", {})
+    channels = config.get("channels")
+    if not isinstance(channels, dict):
+        raise ValueError("channels must be a JSON object")
+    telegram = channels.get("telegram")
     if not isinstance(telegram, dict):
         raise ValueError("channels.telegram must be a JSON object")
-
-    _apply_telegram_scope(
-        telegram, hermes_bot_id, boundary_user_id, allowed_group_ids, allowed_topic_ids
-    )
+    if not allowed_boundaries:
+        raise ValueError("at least one explicit group:topic boundary is required")
     accounts = telegram.get("accounts")
-    if isinstance(accounts, dict):
-        account = accounts.get(account_name)
-        if isinstance(account, dict):
-            _apply_telegram_scope(
-                account, hermes_bot_id, boundary_user_id, allowed_group_ids, allowed_topic_ids
-            )
+    if not isinstance(accounts, dict):
+        raise ValueError("channels.telegram.accounts must be a JSON object")
+    account = accounts.get(account_name)
+    if not isinstance(account, dict):
+        raise ValueError(f"selected Telegram account is missing: {account_name}")
+
+    # Validate every requested target before mutating any part of the config.
+    _validate_scope(telegram, boundary_user_id, allowed_boundaries, "channels.telegram")
+    _validate_scope(account, boundary_user_id, allowed_boundaries, f"accounts.{account_name}")
+
+    _apply_validated_scope(telegram, hermes_bot_id, allowed_boundaries)
+    _apply_validated_scope(account, hermes_bot_id, allowed_boundaries)
 
     after = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return before != after
+
+
+def _parse_boundaries(values: list[str]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for value in values:
+        try:
+            group_id, topic_id = value.rsplit(":", 1)
+        except ValueError as exc:
+            raise ValueError(f"invalid boundary {value!r}; expected GROUP_ID:TOPIC_ID") from exc
+        if not group_id or not topic_id:
+            raise ValueError(f"invalid boundary {value!r}; expected GROUP_ID:TOPIC_ID")
+        result.setdefault(group_id, set()).add(topic_id)
+    return result
 
 
 def main() -> int:
@@ -106,8 +146,7 @@ def main() -> int:
     parser.add_argument("--hermes-bot-id", required=True, type=int)
     parser.add_argument("--boundary-user-id", required=True, type=int)
     parser.add_argument("--account", default="default")
-    parser.add_argument("--group-id", action="append", default=[])
-    parser.add_argument("--topic-id", action="append", default=[])
+    parser.add_argument("--boundary", action="append", required=True, help="Exact GROUP_ID:TOPIC_ID pair")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
@@ -117,8 +156,7 @@ def main() -> int:
         args.hermes_bot_id,
         args.boundary_user_id,
         args.account,
-        set(args.group_id),
-        set(args.topic_id),
+        _parse_boundaries(args.boundary),
     )
     if not changed:
         print("policy_status=current")

@@ -125,15 +125,21 @@ def public_safe_text(text: str) -> str:
 
     def strip_url_credentials(match: re.Match[str]) -> str:
         try:
-            parts = urllib.parse.urlsplit(match.group(0))
+            raw_url = match.group(0)
+            has_scheme = bool(re.match(r"(?i)^https?://", raw_url))
+            parts = urllib.parse.urlsplit(raw_url if has_scheme else f"https://{raw_url}")
             host = parts.hostname or ""
             if parts.port:
                 host += f":{parts.port}"
-            return urllib.parse.urlunsplit((parts.scheme, host, "/", "", ""))
+            return urllib.parse.urlunsplit(((parts.scheme or "https").lower(), host, "/", "", ""))
         except Exception:
             return "[REDACTED_URL]"
 
-    return re.sub(r"https?://[^\s]+", strip_url_credentials, redacted)[:700]
+    return re.sub(
+        r"(?i)\b(?:https?://|www\.)[^\s]+",
+        strip_url_credentials,
+        redacted,
+    )[:700]
 
 
 def slugify(s: str) -> str:
@@ -155,7 +161,7 @@ def classify(text: str) -> List[str]:
         tags.append("DECISION")
     if re.search(r"\b(what if|idea|could sell|sell|business model|tokens per tenant|agent tokens|product idea)\b", t):
         tags.append("IDEA")
-    if re.search(r"https?://|www\.", text) or re.search(r"\b(image|screenshot|video|link|url|article)\b", t):
+    if re.search(r"(?i)https?://|www\.", text) or re.search(r"\b(image|screenshot|video|link|url|article)\b", t):
         tags.append("REFERENCE")
     if "?" in text or re.search(r"^\s*(what|why|how|where|when|who|is|are|do|does|did|can|should)\b", t):
         tags.append("QUESTION")
