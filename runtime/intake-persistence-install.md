@@ -32,7 +32,7 @@ Runtime gates after the BotFather toggle:
 - Keep pair-loop protection enabled with a bounded event window and cooldown.
 - Use a plain-text handoff envelope containing request ID, destination, status, timeout, and maximum interaction depth. Do not depend on rich-message parsing for control messages.
 
-The intake hook must return `{"action": "allow"}` after persistence. GitHub/KB capture is an audit side effect and must never replace, truncate, or block the original Telegram payload. A stable capture ID makes Telegram retries idempotent, and one inbound message creates at most one canonical issue.
+The intake hook must return `{"action": "allow"}` immediately after a local SQLite enqueue. GitHub/KB capture runs in a bounded background worker and is an audit side effect; it must never replace, truncate, block, or synchronously delay the original Telegram payload. A stable capture ID, atomic queue claim, and GitHub reconciliation make Telegram retries idempotent, and one inbound message creates at most one canonical issue. Durable queue files are mode `0600`; completed rows retain only the capture ID and effect metadata, not message text.
 
 ## Rollout and rollback
 

@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,12 @@ LOOP_POLICY = {
     "windowSeconds": 60,
     "cooldownSeconds": 300,
 }
+
+
+def _preserve_metadata(path: Path, original_stat: os.stat_result) -> None:
+    """Restore the original mode and owner after a root-run atomic replace."""
+    os.chmod(path, stat.S_IMODE(original_stat.st_mode))
+    os.chown(path, original_stat.st_uid, original_stat.st_gid)
 
 
 def _append_unique(values: Any, value: int) -> list[Any]:
@@ -88,13 +95,14 @@ def main() -> int:
         return 2
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    original_stat = args.config.stat()
     backup = args.config.with_name(f"{args.config.name}.before-bot-handoff.{stamp}.bak")
     backup.write_bytes(args.config.read_bytes())
-    os.chmod(backup, args.config.stat().st_mode)
+    _preserve_metadata(backup, original_stat)
 
     temp = args.config.with_name(f".{args.config.name}.bot-handoff.tmp")
     temp.write_text(json.dumps(config, indent=2) + "\n")
-    os.chmod(temp, args.config.stat().st_mode)
+    _preserve_metadata(temp, original_stat)
     os.replace(temp, args.config)
     print(f"policy_status=applied backup={backup}")
     return 0
